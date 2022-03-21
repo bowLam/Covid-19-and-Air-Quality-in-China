@@ -1,0 +1,405 @@
+---
+title: "Covid and Air Quality"
+author: "Bowie Lam Pui King 3035870595"
+date: "2021/10/31"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+# Set working Directory
+setwd("C:\\Users\\jcgss\\OneDrive\\Desktop\\Master of Economics\\Sem1\\Econ 6067 2pm to 5pm Tuesday CP4- LTA\\Final Project\\1023")
+```
+
+## Covid Data
+The COVID data is download from https://raw.githubusercontent.com/OxCGRT/covid-policy-tracker/master/data/OxCGRT_latest_combined.csv， air quality data in 2019-2020 and site list updated in 2021 is used.
+
+Prepare the COVID Data
+
+Import the raw data, keep only data in Chinese cities. This block will only be ran by one time. And then we will use the saved data file “oxdta.csv” afterwards in order to save time and simplifies the workload.
+
+```{r }
+library(readr)
+oxdta <- read_csv("OxCGRT_latest_combined.csv",show_col_types = FALSE)
+# keep only Chinese cities, with info and index columns.
+oxdta <- oxdta[which(oxdta$CountryName=="China"),c(1:6,41,45)]
+#save oxdta to save time in next manipulation
+write_csv(oxdta,file="oxdta.csv")
+```
+
+## Load the COVID Data
+read file “oxdta.csv” we saved before.
+
+```{r, echo=FALSE}
+library(readr)
+library(data.table)
+oxdta <- as.data.table(read_csv("oxdta.csv",show_col_types = FALSE))
+```
+
+## Import the Air Quality Data
+Data site: https://quotsoft.net/air/
+
+Prepare Air data
+Loop to Read Air Quality Data
+
+We have the site lists and daily air quality data in two years (2019-2020) from the source as raw data. We first create a sequence of dates which is the range of daily data we need, and then use it as i in the loop to read the files by each day. In the process, we only keep the 6 types, since we only wants the average 24h levels of pollutants and AQI, which are the 6 metrics in measuring the air quality. And correspondingly, only one moment data is needed. We choose hours = 12 for convenience.
+
+```{r import, echo=FALSE}
+# create a list of dates that we want to cover, depends on the specific time bandwidth 
+dte <- format(seq(as.Date("2019-05-29"), as.Date("2020-12-31"), by="days"),format="%Y%m%d")
+
+# import the data files
+airdta <- data.table()
+for (i in dte){
+  # subset data with hour=12 and type within only AQI and 24 average pollutant level.
+  newdta <- as.data.table(read_csv(paste0("sites.nosync/china_sites_",i,".csv"),show_col_types = FALSE))[hour==12][type %in% c("AQI","PM2.5_24h","PM10_24h","SO2_24h","NO2_24h","CO_24h")] 
+  airdta <- rbind(airdta,newdta,fill=TRUE)
+}
+save(airdta,file="airdta.Rdata")
+```
+
+## Deal with Missing Dates
+
+```{r missing, echo=FALSE}
+# read air data
+load("airdta.Rdata")
+
+# Check missing dates
+mislist <- vector()
+for (i in dte){
+  if (i %in% airdta$date) {
+    next
+  } else{
+    mislist <- append(mislist,i)
+  }
+}
+
+# View missing dates
+list(mislist)
+length(mislist)
+
+# fill the missing dates with data of t-1
+for(i in mislist){
+  # copy t-1 values. Directly use math method no 1st day in missing dates.
+  apnd <- airdta[which(airdta$date==as.numeric(i)-1),]
+  # change the date
+  apnd$date <- i
+  airdta <- rbind(airdta,apnd)
+}
+
+# checks for missing dates again
+nrow(airdta)/6==length(dte) # should return TRUE
+
+save(airdta,file="airdta.Rdata")
+```
+
+## Calculate the Pollutants’ Value by City
+Then pair the sites to cities, calculate the average pollutants by city and combine the new data together, save as file=airavg.Rdata for further use.
+
+```{r calculate, echo=FALSE}
+load('airdta.Rdata')
+
+# import site list
+library(readr)
+sitelist <- as.data.frame(read_csv("siteslist2021.csv",show_col_types = FALSE))[,c(1,3)]
+
+# change row names in English
+names(sitelist) <- c("site", "city_CH")
+
+# prepare empty data frame
+airavg <-data.frame() 
+
+# copy dte from previous chunk
+dte <- format(seq(as.Date("2019-05-29"), as.Date("2020-12-31"), by="days"),format="%Y%m%d")
+
+# loop each dates
+for (i in dte){
+
+  # prepare empty temporary data frame
+  temp <- data.frame()
+  
+  #transform the table from columns to rows
+  temp <- as.data.frame(t(
+    rbind("r"=c("site",names(airdta)[-c(1,2,3)]),
+          airdta[which(airdta$date==as.numeric(i)),][,c(-1,-2)])
+    ))[-1,]
+  
+  # rename the columns
+  names(temp) <- c('site','AQI','PM2.5_24h','PM10_24h','SO2_24h','NO2_24h','CO_24h')
+  
+  # add the date column with current loop value i
+  temp <- cbind(temp,"date"=i)
+  
+  # pair cities with sites
+  temp <- merge(temp,sitelist,all.x=TRUE)
+
+  # create distinct city list in temp$city_CH
+  citylist <- unique(temp$city_CH)
+  
+  for (i in citylist){
+  
+    # slice temp by city
+    m <- temp[which(temp$city_CH==i),]
+    
+    # calculate mean by city, form 1 row data
+    temp1 <- data.frame(
+      "city_CH"=i,
+      "AQI"=mean(as.numeric(m$AQI),na.rm=TRUE),
+      "PM2.5_24h"= mean(as.numeric(m$PM2.5_24h),na.rm=TRUE),
+      "PM10_24h"=mean(as.numeric(m$PM10_24h),na.rm=TRUE),
+      "SO2_24h"=mean(as.numeric(m$SO2_24h),na.rm=TRUE),
+      "NO2_24h"=mean(as.numeric(m$NO2_24h),na.rm=TRUE),
+      "CO_24h"=mean(as.numeric(m$CO_24h),na.rm=TRUE),
+      "date"=as.numeric(m$date)[1]
+    )
+    
+    # combine in airavg
+    airavg <- rbind(airavg,temp1)
+  }
+
+}
+save(airavg,file="airavg.Rdata")
+```
+
+## Covid with Air Data
+Combine COVID Data with Air Data Combine COVID data with air quality data, pair key index airavg$province=oxdta$region name This step was conducted in python. Please refer to my Python File.
+
+## Calculate the Pollutants’ Value by Province Calculate the average of province.
+Form file=dta.Rdata for RDD regression use.
+
+```{r, echo=FALSE}
+# load the matched Combine_Covid_data_and_Air_data from groupmates.
+mtch <- as.data.frame(read_csv("Combine_Covid_data_and_Air_data.csv",show_col_types = FALSE))[,c(-1,-2)]
+
+# get province list
+names(mtch)[14] <- "province"   # rename the province column
+provincelist <- na.omit(unique(mtch$province))  # omit NA (country level COVID data)
+
+# define time range with bandwidth 90 days after lock-down which is the end of January.
+dte1 <- format(seq(as.Date("2020-01-01"), as.Date("2020-04-30"), by="days"),format="%Y%m%d")
+
+# prepare empty data frame
+dta <- data.frame()
+
+# loop to form new average data frame
+for (b in dte1){
+  
+  # prepare empty temporary data frame
+  temp <- data.frame()
+  
+  # subset the table by dates
+  temp <- mtch[which(mtch$Date==as.numeric(b)),]
+   
+  # loop by province
+  for (i in provincelist){
+    
+    # prepare empty temporary data frame
+    temp2 <- data.frame()
+    
+    # subset the table by province
+    temp1 <- temp[which(temp$province==i),-7]
+    
+    temp2 <- data.frame(
+      "RegionName"=temp1$RegionName[1],
+      "Date"=temp1$Date[1],
+      "StringencyIndex"=temp1$StringencyIndex[1],
+      "province" = i,
+      "AQI"=mean(as.numeric(temp1$AQI),na.rm=TRUE),
+      "PM2.5_24h"= mean(as.numeric(temp1$PM2.5_24h),na.rm=TRUE),
+      "PM10_24h"=mean(as.numeric(temp1$PM10_24h),na.rm=TRUE),
+      "SO2_24h"=mean(as.numeric(temp1$SO2_24h),na.rm=TRUE),
+      "NO2_24h"=mean(as.numeric(temp1$NO2_24h),na.rm=TRUE),
+      "CO_24h"=mean(as.numeric(temp1$CO_24h),na.rm=TRUE)
+    )
+    
+    dta <- rbind(dta,temp2)
+  }
+
+}
+save(dta,file="dta.Rdata")
+```
+
+## Analysis Using RDD
+Manage dta
+Add the air data before from 2019-09-01 to 2019-12-31
+Add column dummy variable
+Trans the date form
+Add threshold date difference.
+
+```{r , echo=FALSE}
+load('dta.Rdata')
+
+# add treatment dummy in dta
+dta <- cbind(dta,"treatment"=ifelse(dta$StringencyIndex==0,0,1))
+
+# trans date form use as.Date
+dta$Date <- as.Date(as.character(dta$Date),format="%Y%m%d")
+
+# add threshold date in dta
+dta <- cbind(dta,"threshold"=as.numeric((dta$Date-as.Date("20200123",format="%Y%m%d"))))
+
+save(dta,file="dta.Rdata")
+```
+
+## The model
+* Please refer to the paper for the actual model, the notation has been changed for displaying convenience here.
+
+AirMetricsit=TREATMENTit+THRESHOLDit+eit
+
+```{r , echo=FALSE}
+load('dta.Rdata')
+dta <- dta[which(dta$threshold<22),]
+
+# OLS model
+library(memisc) 
+
+metrics <- names(dta)[5:10]
+mlist <- list()
+m1_AQI<- lm(AQI~treatment+threshold+treatment*threshold,data=dta)
+m2_AQI <- lm(AQI~treatment+threshold,data=dta)
+
+m1_PM2.5_24h<- lm(PM2.5_24h~treatment+threshold+treatment*threshold,data=dta)
+m2_PM2.5_24h <- lm(PM2.5_24h~treatment+threshold,data=dta)
+
+m1_PM10_24h<- lm(PM10_24h~treatment+threshold+treatment*threshold,data=dta)
+m2_PM10_24h <- lm(PM10_24h~treatment+threshold,data=dta)
+
+m1_SO2_24h<- lm(SO2_24h~treatment+threshold+treatment*threshold,data=dta)
+m2_SO2_24h <- lm(SO2_24h~treatment+threshold,data=dta)
+
+m1_NO2_24h<- lm(NO2_24h~treatment+threshold+treatment*threshold,data=dta)
+m2_NO2_24h <- lm(NO2_24h~treatment+threshold,data=dta)
+
+m1_CO_24h<- lm(CO_24h~treatment+threshold+treatment*threshold,data=dta)
+m2_CO_24h <- lm(CO_24h~treatment+threshold,data=dta)
+
+mtable(m1_AQI,m2_AQI,m1_PM2.5_24h,m2_PM2.5_24h,m1_PM10_24h,m2_PM10_24h,m1_SO2_24h,m2_SO2_24h,m1_NO2_24h,m2_NO2_24h,m1_CO_24h,m2_CO_24h)
+
+
+```
+
+```{r , echo=FALSE}
+load('dta.Rdata')
+dta <- dta[which(dta$threshold<22),]
+
+# install.packages("rdd")
+# install.packages("rddtools")
+library("rdd")
+library("rddtools")
+library("dplyr")
+library("ggplot2")
+
+
+rdd_data(y = dta$PM2.5_24h, 
+         x = dta$StringencyIndex, 
+         cutpoint = 40) %>% 
+  rdd_reg_lm(slope = "same") %>% 
+  summary()
+
+rdd_data(y = dta$PM2.5_24h, 
+         x = dta$StringencyIndex, 
+         cutpoint = 40) %>% 
+  rdd_reg_lm(slope = "separate", order = 2) %>% 
+  summary()
+
+# graph for 6 air quality metrics
+dta %>% #AQI
+  select(StringencyIndex, AQI) %>%
+  mutate(treatment = as.factor(ifelse(StringencyIndex >= 40, 1, 0))) %>%
+  ggplot(aes(x = StringencyIndex, y = AQI, color = treatment)) +
+  geom_point() +
+  geom_smooth(method = "lm",
+              formula = y ~ x + I(x ^ 2),
+              se = FALSE) +
+  scale_color_brewer(palette = "Accent") +
+  guides(color = FALSE) +
+  geom_vline(xintercept = 40, color = "red",
+    size = 1, linetype = "dashed") +
+  labs(y = "AQI",
+       x = "StringencyIndex(0-100)")
+  ggsave(filename="AQI.jpg")
+
+
+dta %>% #PM2.5_24h
+  select(StringencyIndex, PM2.5_24h) %>%
+  mutate(treatment = as.factor(ifelse(StringencyIndex >= 40, 1, 0))) %>%
+  ggplot(aes(x = StringencyIndex, y = PM2.5_24h, color = treatment)) +
+  geom_point() +
+  geom_smooth(method = "lm",
+              formula = y ~ x + I(x ^ 2),
+              se = FALSE) +
+  scale_color_brewer(palette = "Accent") +
+  guides(color = FALSE) +
+  geom_vline(xintercept = 40, color = "red",
+    size = 1, linetype = "dashed") +
+  labs(y = "PM2.5_24h",
+       x = "StringencyIndex(0-100)")
+  ggsave(filename="PM2.5_24h.jpg")
+
+dta %>% #PM10_24h
+  select(StringencyIndex, PM10_24h) %>%
+  mutate(treatment = as.factor(ifelse(StringencyIndex >= 40, 1, 0))) %>%
+  ggplot(aes(x = StringencyIndex, y = PM10_24h, color = treatment)) +
+  geom_point() +
+  geom_smooth(method = "lm",
+              formula = y ~ x + I(x ^ 2),
+              se = FALSE) +
+  scale_color_brewer(palette = "Accent") +
+  guides(color = FALSE) +
+  geom_vline(xintercept = 40, color = "red",
+    size = 1, linetype = "dashed") +
+  labs(y = "PM10_24h",
+       x = "StringencyIndex(0-100)")
+  ggsave(filename="PM10_24h.jpg")
+
+dta %>% #SO2_24h
+  select(StringencyIndex, SO2_24h) %>%
+  mutate(treatment = as.factor(ifelse(StringencyIndex >= 40, 1, 0))) %>%
+  ggplot(aes(x = StringencyIndex, y =SO2_24h, color = treatment)) +
+  geom_point() +
+  geom_smooth(method = "lm",
+              formula = y ~ x + I(x ^ 2),
+              se = FALSE) +
+  scale_color_brewer(palette = "Accent") +
+  guides(color = FALSE) +
+  geom_vline(xintercept = 40, color = "red",
+    size = 1, linetype = "dashed") +
+  labs(y = "SO2_24h",
+       x = "StringencyIndex(0-100)")
+  ggsave(filename="SO2_24h.jpg")
+
+dta %>% #NO2_24h
+  select(StringencyIndex, NO2_24h) %>%
+  mutate(treatment = as.factor(ifelse(StringencyIndex >= 40, 1, 0))) %>%
+  ggplot(aes(x = StringencyIndex, y =NO2_24h, color = treatment)) +
+  geom_point() +
+  geom_smooth(method = "lm",
+              formula = y ~ x + I(x ^ 2),
+              se = FALSE) +
+  scale_color_brewer(palette = "Accent") +
+  guides(color = FALSE) +
+  geom_vline(xintercept = 40, color = "red",
+    size = 1, linetype = "dashed") +
+  labs(y = "NO2_24h",
+       x = "StringencyIndex(0-100)")
+  ggsave(filename="NO2_24h.jpg")
+
+dta %>% #CO_24h
+  select(StringencyIndex, CO_24h) %>%
+  mutate(treatment = as.factor(ifelse(StringencyIndex >= 40, 1, 0))) %>%
+  ggplot(aes(x = StringencyIndex, y =CO_24h, color = treatment)) +
+  geom_point() +
+  geom_smooth(method = "lm",
+              formula = y ~ x + I(x ^ 2),
+              se = FALSE) +
+  scale_color_brewer(palette = "Accent") +
+  guides(color = FALSE) +
+  geom_vline(xintercept = 40, color = "red",
+    size = 1, linetype = "dashed") +
+  labs(y = "CO_24h",
+       x = "StringencyIndex(0-100)")
+  ggsave(filename="CO_24h.jpg")
+```
+
+
